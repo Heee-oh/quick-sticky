@@ -7,7 +7,7 @@
 [![Status](https://img.shields.io/badge/status-active-success)](#)
 
 <img width="445" height="255" alt="image" src="https://github.com/user-attachments/assets/054127fe-dc52-4850-9152-66ebbfa05dbd" />
-<<img width="552" height="498" alt="image" src="https://github.com/user-attachments/assets/d95742c9-8887-4bc9-b3ec-6c69360b470f" />
+<img width="552" height="498" alt="image" src="https://github.com/user-attachments/assets/d95742c9-8887-4bc9-b3ec-6c69360b470f" />
 
 Quick Sticky lets you create lightweight notes exactly where your cursor is, then keep them available across browsing sessions with local persistence.
 
