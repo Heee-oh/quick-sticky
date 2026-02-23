@@ -5,6 +5,7 @@
 [![Manifest V3](https://img.shields.io/badge/Chrome-Manifest%20V3-4285F4)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](#license)
 [![Status](https://img.shields.io/badge/status-active-success)](#)
+
 <img width="445" height="255" alt="image" src="https://github.com/user-attachments/assets/054127fe-dc52-4850-9152-66ebbfa05dbd" />
 <img width="566" height="595" alt="image" src="https://github.com/user-attachments/assets/fa3c6718-46e7-4d13-bee0-67e25aa50b99" />
 
