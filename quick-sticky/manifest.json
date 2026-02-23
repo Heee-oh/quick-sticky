@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Quick Sticky",
+  "description": "Create glass-style sticky notes at cursor position with Alt+N.",
+  "version": "1.0.0",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "quick-sticky-new-note": {
+      "suggested_key": {
+        "default": "Alt+N",
+        "mac": "Alt+N"
+      },
+      "description": "Create a sticky note at the cursor location"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "styles.css"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}
