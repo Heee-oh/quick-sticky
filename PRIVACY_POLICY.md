@@ -66,5 +66,5 @@ Quick Sticky(이하 "확장 프로그램")는 사용자 메모 기능 제공을 
 
 개인정보 관련 문의가 필요한 경우 아래 연락처로 문의해 주세요.
 
-- 이메일: your-email@example.com
+- 이메일: siai3547@gmail.com
 
