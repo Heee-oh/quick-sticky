@@ -5,14 +5,13 @@
 [![Manifest V3](https://img.shields.io/badge/Chrome-Manifest%20V3-4285F4)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](#license)
 [![Status](https://img.shields.io/badge/status-active-success)](#)
+<p>
+  <img width="552" alt="image" src="https://github.com/user-attachments/assets/d95742c9-8887-4bc9-b3ec-6c69360b470f" />
+</p>
 
-<img width="552" height="498" alt="image" src="https://github.com/user-attachments/assets/d95742c9-8887-4bc9-b3ec-6c69360b470f" />
-
-
-<img width="445" height="255" alt="image" src="https://github.com/user-attachments/assets/054127fe-dc52-4850-9152-66ebbfa05dbd" />
-
-
-
+<p>
+  <img width="445" alt="image" src="https://github.com/user-attachments/assets/054127fe-dc52-4850-9152-66ebbfa05dbd" />
+</p>
 Quick Sticky lets you create lightweight notes exactly where your cursor is, then keep them available across browsing sessions with local persistence.
 
 ## Highlights
