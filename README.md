@@ -6,7 +6,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](#license)
 [![Status](https://img.shields.io/badge/status-active-success)](#)
 <p>
-  <img width="552" alt="image" src="https://github.com/user-attachments/assets/d95742c9-8887-4bc9-b3ec-6c69360b470f" />
+  <img width="538" height="298" alt="image" src="https://github.com/user-attachments/assets/1ff79611-2771-428e-985f-0e9a481d4978" />
+
 </p>
 
 <p>
