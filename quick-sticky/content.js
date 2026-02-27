@@ -8,9 +8,30 @@
   const PAGE_KEY = `${location.origin}${location.pathname}${location.search}`;
   const NOTE_WIDTH = 280;
   const NOTE_MIN_HEIGHT = 150;
+  const MAX_IMAGE_FILE_BYTES = 2 * 1024 * 1024;
+  const MAX_IMAGE_TOTAL_BYTES_PER_NOTE = 8 * 1024 * 1024;
+  const MAX_IMAGE_ITEMS_PER_NOTE = 12;
+  const MAX_TOTAL_ITEMS_PER_NOTE = 40;
+  const ALLOWED_IMAGE_MIME_TYPES = new Set([
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/gif",
+    "image/webp",
+    "image/bmp"
+  ]);
+  const ALLOWED_YOUTUBE_HOSTS = new Set([
+    "youtube.com",
+    "m.youtube.com",
+    "youtu.be"
+  ]);
+  const ALLOWED_YOUTUBE_THUMB_HOSTS = new Set([
+    "i.ytimg.com",
+    "img.youtube.com",
+    "i3.ytimg.com"
+  ]);
 
   const host = document.createElement("div");
-  host.setAttribute("data-quick-sticky-host", "true");
   Object.assign(host.style, {
     position: "fixed",
     inset: "0",
@@ -19,7 +40,7 @@
   });
   document.documentElement.appendChild(host);
 
-  const shadowRoot = host.attachShadow({ mode: "open" });
+  const shadowRoot = host.attachShadow({ mode: "closed" });
   const styleEl = document.createElement("style");
   styleEl.textContent = await loadStyles();
   shadowRoot.appendChild(styleEl);
@@ -43,6 +64,7 @@
   let pendingSave = false;
   let dragging = null;
   let historyDragging = null;
+  let runtimeInvalidated = false;
 
   const historyUi = createHistoryUi();
 
@@ -105,14 +127,23 @@
     true
   );
 
-  chrome.runtime.onMessage.addListener((message) => {
-    if (!message || message.type !== "QS_CREATE_NOTE") {
-      return;
-    }
-    createNoteAtPointer();
-  });
+  try {
+    chrome.runtime.onMessage.addListener((message) => {
+      if (!message || message.type !== "QS_CREATE_NOTE") {
+        return;
+      }
+      createNoteAtPointer();
+    });
+  } catch (error) {
+    markRuntimeInvalid(error);
+  }
 
-  await hydrateFromStorage();
+  try {
+    await hydrateFromStorage();
+  } catch (error) {
+    markRuntimeInvalid(error);
+    console.warn("Quick Sticky: storage hydration skipped due to invalid extension context.");
+  }
   refreshHistoryPanel();
 
   function isCreateShortcut(event) {
@@ -216,11 +247,9 @@
 
     const granularitySelect = document.createElement("select");
     granularitySelect.className = "qs-select";
-    granularitySelect.innerHTML = `
-      <option value="date">Date</option>
-      <option value="month">Month</option>
-      <option value="year">Year</option>
-    `;
+    appendSelectOption(granularitySelect, "date", "Date");
+    appendSelectOption(granularitySelect, "month", "Month");
+    appendSelectOption(granularitySelect, "year", "Year");
     granularityLabel.appendChild(granularitySelect);
 
     const periodLabel = document.createElement("label");
@@ -231,7 +260,15 @@
     periodSelect.className = "qs-select";
     periodLabel.appendChild(periodSelect);
 
-    controls.append(granularityLabel, periodLabel);
+    const domainLabel = document.createElement("label");
+    domainLabel.className = "qs-field";
+    domainLabel.textContent = "Domain";
+
+    const domainSelect = document.createElement("select");
+    domainSelect.className = "qs-select";
+    domainLabel.appendChild(domainSelect);
+
+    controls.append(domainLabel, granularityLabel, periodLabel);
 
     const summary = document.createElement("div");
     summary.className = "qs-history-summary";
@@ -245,6 +282,7 @@
 
     const state = {
       isOpen: false,
+      domain: "all",
       granularity: "date",
       period: "all",
       customPosition: false
@@ -256,6 +294,12 @@
 
     panelClose.addEventListener("click", () => {
       setOpen(false);
+    });
+
+    domainSelect.addEventListener("change", () => {
+      state.domain = domainSelect.value;
+      state.period = "all";
+      render();
     });
 
     granularitySelect.addEventListener("change", () => {
@@ -271,7 +315,19 @@
 
     function render() {
       const entries = getHistoryEntries();
-      const groups = buildPeriodGroups(entries, state.granularity);
+      const domains = buildDomainGroups(entries);
+      fillDomainOptions(domainSelect, domains, state.domain);
+      const hasDomain = domains.some((item) => item.key === domainSelect.value);
+      state.domain = hasDomain ? domainSelect.value : "all";
+      if (state.domain !== domainSelect.value) {
+        domainSelect.value = state.domain;
+      }
+
+      const domainFiltered = state.domain === "all"
+        ? entries
+        : entries.filter((entry) => entry.domain === state.domain);
+
+      const groups = buildPeriodGroups(domainFiltered, state.granularity);
       fillPeriodOptions(periodSelect, groups, state.period);
 
       const hasSelection = groups.some((group) => group.key === periodSelect.value);
@@ -281,11 +337,11 @@
       }
 
       const filtered = state.period === "all"
-        ? entries
-        : entries.filter((entry) => toPeriodKey(entry.updatedAt, state.granularity) === state.period);
+        ? domainFiltered
+        : domainFiltered.filter((entry) => toPeriodKey(entry.updatedAt, state.granularity) === state.period);
 
       summary.textContent = `${filtered.length} notes`;
-      drawHistoryList(list, filtered);
+      drawHistoryList(list, filtered, state.domain === "all");
     }
 
     function setOpen(nextOpen) {
@@ -331,7 +387,7 @@
     };
   }
 
-  function drawHistoryList(list, entries) {
+  function drawHistoryList(list, entries, groupByDomain = false) {
     list.textContent = "";
 
     if (entries.length === 0) {
@@ -342,7 +398,16 @@
       return;
     }
 
-    for (const entry of entries) {
+    const grouped = groupByDomain ? groupEntriesByDomain(entries) : [{ domain: "", entries }];
+    for (const group of grouped) {
+      if (groupByDomain) {
+        const heading = document.createElement("div");
+        heading.className = "qs-history-group-label";
+        heading.textContent = group.domain;
+        list.appendChild(heading);
+      }
+
+      for (const entry of group.entries) {
       const card = document.createElement("div");
       card.className = "qs-history-item";
 
@@ -369,6 +434,7 @@
       });
 
       list.appendChild(card);
+    }
     }
   }
 
@@ -414,6 +480,7 @@
       updatedAt: stored.updatedAt,
       isClosed: false,
       storagePageKey: stored.storagePageKey,
+      domain: stored.domain,
       focus: true,
       persist: true
     });
@@ -436,6 +503,7 @@
       updatedAt: note.updatedAt,
       isClosed: false,
       storagePageKey: note.storagePageKey,
+      domain: note.domain,
       focus: true,
       persist: true
     });
@@ -471,6 +539,64 @@
     } catch {
       return pageKey;
     }
+  }
+
+  function buildDomainGroups(entries) {
+    const map = new Map();
+    for (const entry of entries) {
+      const key = normalizeDomain(entry.domain, entry.pageKey);
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          label: key,
+          latest: entry.updatedAt
+        });
+      } else {
+        const current = map.get(key);
+        if (entry.updatedAt > current.latest) {
+          current.latest = entry.updatedAt;
+        }
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => b.latest - a.latest);
+  }
+
+  function fillDomainOptions(selectEl, domains, selected) {
+    selectEl.textContent = "";
+    const allOption = document.createElement("option");
+    allOption.value = "all";
+    allOption.textContent = "All Domains";
+    selectEl.appendChild(allOption);
+
+    for (const item of domains) {
+      const option = document.createElement("option");
+      option.value = item.key;
+      option.textContent = item.label;
+      selectEl.appendChild(option);
+    }
+
+    selectEl.value = selected || "all";
+    if (selectEl.value !== selected && selectEl.value !== "all") {
+      selectEl.value = "all";
+    }
+  }
+
+  function groupEntriesByDomain(entries) {
+    const map = new Map();
+    for (const entry of entries) {
+      const key = normalizeDomain(entry.domain, entry.pageKey);
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+      map.get(key).push(entry);
+    }
+    return Array.from(map.entries())
+      .map(([domain, list]) => ({ domain, entries: list }))
+      .sort((a, b) => {
+        const aLatest = a.entries.length > 0 ? a.entries[0].updatedAt : 0;
+        const bLatest = b.entries.length > 0 ? b.entries[0].updatedAt : 0;
+        return bLatest - aLatest;
+      });
   }
 
   function buildPeriodGroups(entries, granularity) {
@@ -569,6 +695,7 @@
         entries.push({
           id: normalized.id,
           pageKey: normalized.storagePageKey,
+          domain: normalized.domain,
           text: normalized.text,
           imageCount: normalized.items.filter((item) => item && item.type === "image").length,
           youtubeCount: normalized.items.filter((item) => item && item.type === "youtube").length,
@@ -590,6 +717,7 @@
     updatedAt,
     isClosed = false,
     storagePageKey = PAGE_KEY,
+    domain,
     focus = false,
     persist = true
   } = {}) {
@@ -600,11 +728,12 @@
       x: typeof x === "number" ? x : lastPointer.x,
       y: typeof y === "number" ? y : lastPointer.y,
       text: typeof text === "string" ? text : "",
-      items: Array.isArray(items) ? items : [],
+      items: sanitizeStoredItems(items),
       createdAt: finiteOr(createdAt, now),
       updatedAt: finiteOr(updatedAt, now),
       isClosed: Boolean(isClosed),
-      storagePageKey: (typeof storagePageKey === "string" && storagePageKey) ? storagePageKey : PAGE_KEY
+      storagePageKey: (typeof storagePageKey === "string" && storagePageKey) ? storagePageKey : PAGE_KEY,
+      domain: normalizeDomain(domain, (typeof storagePageKey === "string" && storagePageKey) ? storagePageKey : PAGE_KEY)
     };
     activeStorageKeys.add(noteData.storagePageKey);
 
@@ -701,6 +830,15 @@
     textarea.placeholder = "Type something...";
     textarea.value = noteData.text;
     textarea.spellcheck = true;
+    const isolateFromPageShortcuts = (event) => {
+      event.stopPropagation();
+    };
+    textarea.addEventListener("keydown", isolateFromPageShortcuts);
+    textarea.addEventListener("keyup", isolateFromPageShortcuts);
+    textarea.addEventListener("keypress", isolateFromPageShortcuts);
+    textarea.addEventListener("paste", isolateFromPageShortcuts);
+    textarea.addEventListener("copy", isolateFromPageShortcuts);
+    textarea.addEventListener("cut", isolateFromPageShortcuts);
     textarea.addEventListener("input", () => {
       noteData.text = textarea.value;
       markEdited(noteData);
@@ -727,6 +865,9 @@
       noteData.text = textarea.value;
 
       const item = await buildYouTubeItem(youtube.url, youtube.videoId);
+      if (!item) {
+        return;
+      }
       noteData.items.push(item);
       appendItem(itemList, item);
       markEdited(noteData);
@@ -755,21 +896,47 @@
         return;
       }
 
-      const files = Array.from(event.dataTransfer.files || []).filter((file) => file.type.startsWith("image/"));
+      const files = Array.from(event.dataTransfer.files || []).filter((file) => isAllowedImageFile(file));
       if (files.length === 0) {
         return;
       }
 
       event.preventDefault();
+      let { imageCount, imageBytes } = getImageStats(noteData.items);
+      let added = 0;
       for (const file of files) {
+        if (noteData.items.length >= MAX_TOTAL_ITEMS_PER_NOTE) {
+          break;
+        }
+        if (imageCount >= MAX_IMAGE_ITEMS_PER_NOTE) {
+          break;
+        }
+        if (!Number.isFinite(file.size) || file.size <= 0 || file.size > MAX_IMAGE_FILE_BYTES) {
+          continue;
+        }
+        if (imageBytes + file.size > MAX_IMAGE_TOTAL_BYTES_PER_NOTE) {
+          continue;
+        }
+
         const src = await fileToDataUrl(file);
+        const safeSrc = normalizeImageDataUrl(src);
+        if (!safeSrc) {
+          continue;
+        }
+
         const item = {
           type: "image",
-          src,
+          src: safeSrc,
           name: file.name || "image"
         };
         noteData.items.push(item);
         appendItem(itemList, item);
+        imageCount += 1;
+        imageBytes += file.size;
+        added += 1;
+      }
+      if (added === 0) {
+        return;
       }
       markEdited(noteData);
       scheduleSave();
@@ -835,12 +1002,16 @@
     }
 
     if (item.type === "image") {
+      const safeSrc = normalizeImageDataUrl(item.src);
+      if (!safeSrc) {
+        return;
+      }
       const wrap = document.createElement("div");
       wrap.className = "qs-item qs-image-wrap";
 
       const img = document.createElement("img");
       img.className = "qs-image";
-      img.src = item.src;
+      img.src = safeSrc;
       img.alt = item.name || "Image";
       wrap.appendChild(img);
       container.appendChild(wrap);
@@ -848,16 +1019,26 @@
     }
 
     if (item.type === "youtube") {
+      const safeUrl = normalizeYouTubeUrl(item.url);
+      if (!safeUrl) {
+        return;
+      }
+      const videoId = extractYouTubeVideoId(new URL(safeUrl));
+      const safeThumb = normalizeYouTubeThumbnail(item.thumbnail, videoId);
+      if (!safeThumb) {
+        return;
+      }
+
       const card = document.createElement("button");
       card.type = "button";
       card.className = "qs-item qs-yt-card";
       card.addEventListener("click", () => {
-        window.open(item.url, "_blank", "noopener,noreferrer");
+        window.open(safeUrl, "_blank", "noopener,noreferrer");
       });
 
       const thumb = document.createElement("img");
       thumb.className = "qs-yt-thumb";
-      thumb.src = item.thumbnail;
+      thumb.src = safeThumb;
       thumb.alt = item.title || "YouTube thumbnail";
 
       const meta = document.createElement("div");
@@ -869,7 +1050,7 @@
 
       const url = document.createElement("div");
       url.className = "qs-yt-url";
-      url.textContent = shortUrl(item.url);
+      url.textContent = shortUrl(safeUrl);
 
       meta.append(title, url);
       card.append(thumb, meta);
@@ -878,13 +1059,24 @@
   }
 
   async function buildYouTubeItem(url, videoId) {
-    const fallbackThumb = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+    const safeUrl = normalizeYouTubeUrl(url);
+    if (!safeUrl) {
+      return null;
+    }
+    const safeVideoId = videoId && /^[a-zA-Z0-9_-]{11}$/.test(videoId)
+      ? videoId
+      : extractYouTubeVideoId(new URL(safeUrl));
+    if (!safeVideoId) {
+      return null;
+    }
+
+    const fallbackThumb = `https://i.ytimg.com/vi/${safeVideoId}/hqdefault.jpg`;
     let title = "YouTube Video";
     let thumbnail = fallbackThumb;
 
     try {
       const response = await fetch(
-        `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`
+        `https://www.youtube.com/oembed?url=${encodeURIComponent(safeUrl)}&format=json`
       );
       if (response.ok) {
         const data = await response.json();
@@ -901,48 +1093,234 @@
 
     return {
       type: "youtube",
-      url,
-      videoId,
+      url: safeUrl,
+      videoId: safeVideoId,
       title,
-      thumbnail
+      thumbnail: normalizeYouTubeThumbnail(thumbnail, safeVideoId) || fallbackThumb
     };
   }
 
   function parseYouTube(raw) {
-    if (!raw) {
+    const safeUrl = normalizeYouTubeUrl(raw);
+    if (!safeUrl) {
       return null;
     }
-
-    let url;
-    try {
-      url = new URL(raw);
-    } catch {
-      return null;
-    }
-
-    const hostName = url.hostname.replace(/^www\./, "");
-    let videoId = "";
-
-    if (hostName === "youtu.be") {
-      videoId = url.pathname.slice(1);
-    } else if (hostName === "youtube.com" || hostName === "m.youtube.com") {
-      videoId = url.searchParams.get("v") || "";
-      if (!videoId) {
-        const parts = url.pathname.split("/").filter(Boolean);
-        if (parts[0] === "shorts" || parts[0] === "embed") {
-          videoId = parts[1] || "";
-        }
-      }
-    }
-
-    if (!/^[a-zA-Z0-9_-]{6,}$/.test(videoId)) {
+    const videoId = extractYouTubeVideoId(new URL(safeUrl));
+    if (!videoId) {
       return null;
     }
 
     return {
-      url: url.toString(),
+      url: safeUrl,
       videoId
     };
+  }
+
+  function appendSelectOption(selectEl, value, label) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    selectEl.appendChild(option);
+  }
+
+  function isAllowedImageFile(file) {
+    if (!file || typeof file.type !== "string") {
+      return false;
+    }
+    return ALLOWED_IMAGE_MIME_TYPES.has(file.type.toLowerCase());
+  }
+
+  function normalizeImageDataUrl(raw) {
+    if (typeof raw !== "string") {
+      return "";
+    }
+    const trimmed = raw.trim();
+    if (!/^data:image\/(png|jpe?g|gif|webp|bmp);base64,[a-z0-9+/=\s]+$/i.test(trimmed)) {
+      return "";
+    }
+    return trimmed.replace(/\s+/g, "");
+  }
+
+  function estimateDataUrlBytes(dataUrl) {
+    const normalized = normalizeImageDataUrl(dataUrl);
+    if (!normalized) {
+      return 0;
+    }
+    const base64 = normalized.split(",")[1] || "";
+    const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+    return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+  }
+
+  function getImageStats(items) {
+    let imageCount = 0;
+    let imageBytes = 0;
+    for (const item of Array.isArray(items) ? items : []) {
+      if (!item || item.type !== "image") {
+        continue;
+      }
+      const safeSrc = normalizeImageDataUrl(item.src);
+      if (!safeSrc) {
+        continue;
+      }
+      imageCount += 1;
+      imageBytes += estimateDataUrlBytes(safeSrc);
+    }
+    return { imageCount, imageBytes };
+  }
+
+  function normalizeYouTubeUrl(raw) {
+    if (typeof raw !== "string" || !raw.trim()) {
+      return "";
+    }
+
+    let url;
+    try {
+      url = new URL(raw.trim());
+    } catch {
+      return "";
+    }
+
+    if (url.protocol !== "https:") {
+      return "";
+    }
+
+    const hostName = url.hostname.replace(/^www\./, "").toLowerCase();
+    if (!ALLOWED_YOUTUBE_HOSTS.has(hostName)) {
+      return "";
+    }
+
+    const videoId = extractYouTubeVideoId(url);
+    if (!videoId) {
+      return "";
+    }
+    return `https://www.youtube.com/watch?v=${videoId}`;
+  }
+
+  function extractYouTubeVideoId(url) {
+    if (!(url instanceof URL)) {
+      return "";
+    }
+
+    const hostName = url.hostname.replace(/^www\./, "").toLowerCase();
+    let videoId = "";
+    if (hostName === "youtu.be") {
+      videoId = url.pathname.split("/").filter(Boolean)[0] || "";
+    } else if (hostName === "youtube.com" || hostName === "m.youtube.com") {
+      videoId = url.searchParams.get("v") || "";
+      if (!videoId) {
+        const parts = url.pathname.split("/").filter(Boolean);
+        if (parts.length >= 2 && (parts[0] === "shorts" || parts[0] === "embed" || parts[0] === "live")) {
+          videoId = parts[1];
+        }
+      }
+    }
+
+    return /^[a-zA-Z0-9_-]{11}$/.test(videoId) ? videoId : "";
+  }
+
+  function normalizeYouTubeThumbnail(raw, videoId) {
+    const fallback = /^[a-zA-Z0-9_-]{11}$/.test(String(videoId || ""))
+      ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+      : "";
+
+    if (typeof raw !== "string" || !raw.trim()) {
+      return fallback;
+    }
+
+    let url;
+    try {
+      url = new URL(raw.trim());
+    } catch {
+      return fallback;
+    }
+
+    if (url.protocol !== "https:") {
+      return fallback;
+    }
+
+    const hostName = url.hostname.replace(/^www\./, "").toLowerCase();
+    if (!ALLOWED_YOUTUBE_THUMB_HOSTS.has(hostName)) {
+      return fallback;
+    }
+    return url.toString();
+  }
+
+  function sanitizeStoredItems(rawItems) {
+    if (!Array.isArray(rawItems)) {
+      return [];
+    }
+
+    const sanitized = [];
+    let imageCount = 0;
+    let imageBytes = 0;
+    for (const raw of rawItems) {
+      if (!raw || typeof raw !== "object") {
+        continue;
+      }
+      if (sanitized.length >= MAX_TOTAL_ITEMS_PER_NOTE) {
+        break;
+      }
+
+      if (raw.type === "image") {
+        if (imageCount >= MAX_IMAGE_ITEMS_PER_NOTE) {
+          continue;
+        }
+        const safeSrc = normalizeImageDataUrl(raw.src);
+        if (!safeSrc) {
+          continue;
+        }
+        const bytes = estimateDataUrlBytes(safeSrc);
+        if (bytes <= 0 || bytes > MAX_IMAGE_FILE_BYTES) {
+          continue;
+        }
+        if (imageBytes + bytes > MAX_IMAGE_TOTAL_BYTES_PER_NOTE) {
+          continue;
+        }
+        sanitized.push({
+          type: "image",
+          src: safeSrc,
+          name: typeof raw.name === "string" && raw.name.trim()
+            ? raw.name.trim().slice(0, 120)
+            : "image"
+        });
+        imageCount += 1;
+        imageBytes += bytes;
+        continue;
+      }
+
+      if (raw.type === "youtube") {
+        const safeUrl = normalizeYouTubeUrl(raw.url);
+        if (!safeUrl) {
+          continue;
+        }
+        const videoId = extractYouTubeVideoId(new URL(safeUrl));
+        if (!videoId) {
+          continue;
+        }
+        const safeThumb = normalizeYouTubeThumbnail(raw.thumbnail, videoId);
+        if (!safeThumb) {
+          continue;
+        }
+        sanitized.push({
+          type: "youtube",
+          url: safeUrl,
+          videoId,
+          title: typeof raw.title === "string" && raw.title.trim()
+            ? raw.title.trim().slice(0, 160)
+            : "YouTube Video",
+          thumbnail: safeThumb
+        });
+      }
+    }
+    return sanitized;
+  }
+
+  function areItemsEquivalent(sourceItems, sanitizedItems) {
+    try {
+      return JSON.stringify(Array.isArray(sourceItems) ? sourceItems : []) === JSON.stringify(sanitizedItems);
+    } catch {
+      return false;
+    }
   }
 
   function getCurrentLine(value, caret) {
@@ -968,7 +1346,7 @@
   }
 
   function hasImageFile(fileList) {
-    return Array.from(fileList || []).some((file) => file.type.startsWith("image/"));
+    return Array.from(fileList || []).some((file) => isAllowedImageFile(file));
   }
 
   function fileToDataUrl(file) {
@@ -1001,7 +1379,26 @@
     }
   }
 
+  function normalizeDomain(rawDomain, fallbackPageKey = PAGE_KEY) {
+    if (typeof rawDomain === "string" && rawDomain.trim()) {
+      return rawDomain.trim().toLowerCase();
+    }
+    return extractDomainFromPageKey(fallbackPageKey);
+  }
+
+  function extractDomainFromPageKey(pageKey) {
+    try {
+      const url = new URL(pageKey);
+      return url.hostname.replace(/^www\./i, "").toLowerCase();
+    } catch {
+      return "unknown-domain";
+    }
+  }
+
   function scheduleSave() {
+    if (runtimeInvalidated) {
+      return;
+    }
     if (saveTimer) {
       clearTimeout(saveTimer);
     }
@@ -1012,6 +1409,9 @@
   }
 
   async function saveNow() {
+    if (runtimeInvalidated) {
+      return;
+    }
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = null;
@@ -1047,6 +1447,7 @@
       createdAt: finiteOr(note.createdAt, Date.now()),
       updatedAt: finiteOr(note.updatedAt, Date.now()),
       isClosed: Boolean(note.isClosed),
+      domain: normalizeDomain(note.domain, note.storagePageKey),
       storagePageKey: (typeof note.storagePageKey === "string" && note.storagePageKey)
         ? note.storagePageKey
         : PAGE_KEY
@@ -1104,6 +1505,7 @@
         createdAt: normalized.createdAt,
         updatedAt: normalized.updatedAt,
         isClosed: normalized.isClosed,
+        domain: normalized.domain,
         storagePageKey: normalized.storagePageKey,
         focus: false,
         persist: false
@@ -1120,23 +1522,25 @@
     const source = raw && typeof raw === "object" ? raw : {};
     const id = typeof source.id === "string" && source.id ? source.id : createId();
     const text = typeof source.text === "string" ? source.text : "";
-    const items = Array.isArray(source.items) ? source.items : [];
+    const items = sanitizeStoredItems(source.items);
     const createdAt = finiteOr(source.createdAt, now);
     const updatedAt = finiteOr(source.updatedAt, createdAt);
     const isClosed = Boolean(source.isClosed);
     const storagePageKey = (typeof source.storagePageKey === "string" && source.storagePageKey)
       ? source.storagePageKey
       : fallbackPageKey;
+    const domain = normalizeDomain(source.domain, storagePageKey);
     const x = finiteOr(source.x, lastPointer.x);
     const y = finiteOr(source.y, lastPointer.y);
 
     const changed = (
       source.id !== id ||
       source.text !== text ||
-      source.items !== items ||
+      !areItemsEquivalent(source.items, items) ||
       source.createdAt !== createdAt ||
       source.updatedAt !== updatedAt ||
       source.isClosed !== isClosed ||
+      source.domain !== domain ||
       source.storagePageKey !== storagePageKey ||
       source.x !== x ||
       source.y !== y
@@ -1151,6 +1555,7 @@
       createdAt,
       updatedAt,
       isClosed,
+      domain,
       storagePageKey,
       changed
     };
@@ -1158,13 +1563,35 @@
 
   function storageGet(key) {
     return new Promise((resolve) => {
-      chrome.storage.local.get([key], resolve);
+      try {
+        chrome.storage.local.get([key], (result) => {
+          if (chrome.runtime.lastError) {
+            markRuntimeInvalid(chrome.runtime.lastError);
+            resolve({});
+            return;
+          }
+          resolve(result || {});
+        });
+      } catch (error) {
+        markRuntimeInvalid(error);
+        resolve({});
+      }
     });
   }
 
   function storageSet(value) {
     return new Promise((resolve) => {
-      chrome.storage.local.set(value, resolve);
+      try {
+        chrome.storage.local.set(value, () => {
+          if (chrome.runtime.lastError) {
+            markRuntimeInvalid(chrome.runtime.lastError);
+          }
+          resolve();
+        });
+      } catch (error) {
+        markRuntimeInvalid(error);
+        resolve();
+      }
     });
   }
 
@@ -1175,5 +1602,20 @@
 
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
+  }
+
+  function markRuntimeInvalid(error) {
+    if (runtimeInvalidated) {
+      return;
+    }
+    const message = String((error && error.message) || error || "");
+    if (message.toLowerCase().includes("extension context invalidated")) {
+      runtimeInvalidated = true;
+      if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+      }
+      console.warn("Quick Sticky: extension context invalidated. Ignoring stale content script calls.");
+    }
   }
 })();
